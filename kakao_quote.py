@@ -134,15 +134,60 @@ def auth():
 
 
 def fresh_token():
-    conf = load()
+    use_file = os.path.exists(CONF)
+    if use_file:
+        conf = load()
+    else:  # CI: 토큰 파일 없이 환경변수의 refresh token으로 시작
+        conf = {"refresh_token": os.environ.get("KAKAO_REFRESH_TOKEN", ""), "access_expires_at": 0}
+    if not conf.get("refresh_token"):
+        sys.exit("토큰 없음: `auth`를 실행하거나 KAKAO_REFRESH_TOKEN을 설정하세요.")
     if time.time() >= conf.get("access_expires_at", 0):
         t = token_request(grant_type="refresh_token", refresh_token=conf["refresh_token"])
         conf["access_token"] = t["access_token"]
         conf["access_expires_at"] = int(time.time()) + int(t["expires_in"]) - 60
         if t.get("refresh_token"):  # 만료 임박 시에만 새로 내려옴
             conf["refresh_token"] = t["refresh_token"]
-        save(conf)
+            out = os.environ.get("NEW_REFRESH_TOKEN_FILE")
+            if out:  # CI가 이 파일로 GitHub Secret을 갱신한다
+                with open(out, "w") as f:
+                    f.write(t["refresh_token"])
+        if use_file:
+            save(conf)
     return conf["access_token"]
+
+
+def _quote_api(prompt):
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return ""
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=json.dumps(
+            {
+                "model": os.environ.get("QUOTE_MODEL", "claude-haiku-5-5"),
+                "max_tokens": 200,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        ).encode(),
+        headers={
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)["content"][0]["text"].strip()
+
+
+def _quote_cli(prompt):
+    if not shutil.which(CLAUDE) and not os.path.exists(CLAUDE):
+        return ""
+    return subprocess.run(
+        [CLAUDE, "-p", "--model", "haiku", prompt],
+        capture_output=True,
+        text=True,
+        timeout=90,
+    ).stdout.strip()
 
 
 def make_quote():
@@ -151,17 +196,13 @@ def make_quote():
         "격려가 되는 담백한 톤, 80자 이내, 따옴표·이모지·설명·출처 없이 글귀 본문만. "
         f"(변주용 숫자: {random.randint(1, 10**6)})"
     )
-    try:
-        out = subprocess.run(
-            [CLAUDE, "-p", "--model", "haiku", prompt],
-            capture_output=True,
-            text=True,
-            timeout=90,
-        ).stdout.strip()
+    for gen in (_quote_api, _quote_cli):
+        try:
+            out = gen(prompt)
+        except Exception:
+            out = ""
         if out and len(out) <= 150:
             return out
-    except Exception:
-        pass
     return random.choice(FALLBACK)
 
 
