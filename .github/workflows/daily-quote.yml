@@ -1,0 +1,33 @@
+name: daily-quote
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # 매일 09:00 KST (UTC 00:00). 실행은 수 분~수십 분 지연될 수 있음
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Send quote to KakaoTalk
+        env:
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NEW_REFRESH_TOKEN_FILE: ${{ runner.temp }}/new_refresh_token
+        run: python3 kakao_quote.py send
+      - name: Rotate refresh token secret (만료 임박 시에만 새 토큰이 발급됨)
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          NEW_REFRESH_TOKEN_FILE: ${{ runner.temp }}/new_refresh_token
+        run: |
+          if [ -s "$NEW_REFRESH_TOKEN_FILE" ] && [ -n "$GH_TOKEN" ]; then
+            gh secret set KAKAO_REFRESH_TOKEN --repo "$GITHUB_REPOSITORY" < "$NEW_REFRESH_TOKEN_FILE"
+          elif [ -s "$NEW_REFRESH_TOKEN_FILE" ]; then
+            echo "::warning::새 refresh token이 발급됐지만 GH_PAT이 없어 Secret을 갱신하지 못했습니다."
+          fi
